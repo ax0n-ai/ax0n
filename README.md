@@ -16,11 +16,12 @@ Ax0n is a **model-agnostic Think & Memory layer** for LLMs. It enables structure
 ## Quick Start
 
 ```bash
-pip install axon
+pip install ax0n-ai
 ```
 
 ```python
-from axon import Axon
+from ax0n_ai import Axon
+```
 
 # Initialize with your preferred LLM
 ax = Axon(llm_client="openai", api_key="your-key")
