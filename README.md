@@ -21,7 +21,6 @@ pip install ax0n-ai
 
 ```python
 from ax0n_ai import Axon
-```
 
 # Initialize with your preferred LLM
 ax = Axon(llm_client="openai", api_key="your-key")
