@@ -1,20 +1,19 @@
-"""
-Core module for Ax0n - Main classes and configuration
-"""
-
 from .core import Axon
 from .think_layer import ThinkLayer
 from .config import AxonConfig, ThinkLayerConfig, LLMConfig
-from .models import Thought, ThoughtStage, ThoughtResult, MemoryEntry
+from .models import Thought, ThoughtStage, ThoughtResult, MemoryEntry, AgentConfig
+from .revision import RevisionLoop
 
 __all__ = [
     'Axon',
-    'ThinkLayer', 
+    'ThinkLayer',
+    'RevisionLoop',
     'AxonConfig',
     'ThinkLayerConfig',
     'LLMConfig',
+    'AgentConfig',
     'Thought',
     'ThoughtStage',
     'ThoughtResult',
     'MemoryEntry'
-] 
+]
