@@ -1,27 +1,20 @@
-"""
-Ax0n: Model-Agnostic Think & Memory Layer for LLMs
-
-A comprehensive library for structured reasoning, grounding, and memory management.
-"""
-
 __version__ = "0.1.0"
 __author__ = "Ax0n Team"
 __email__ = "install.py@gmail.com"
 
-# Core exports
 from .core import (
     Axon,
     ThinkLayer,
     AxonConfig,
     ThinkLayerConfig,
     LLMConfig,
+    AgentConfig,
     Thought,
     ThoughtStage,
     ThoughtResult,
     MemoryEntry
 )
 
-# Reasoning exports
 from .reasoning import (
     ReasoningMethod,
     ChainOfThoughts,
@@ -29,28 +22,27 @@ from .reasoning import (
     AlgorithmOfThoughts,
     ReasoningOrchestrator,
     TreeOfThoughts,
-    ThoughtNode
+    ThoughtNode,
+    GraphOfThoughts,
 )
 
-# Component exports
 from .retrieval import Retriever
 from .memory import MemoryManager
 from .grounding import GroundingModule
 from .rendering import Renderer
+from .utils.embeddings import EmbeddingProvider
 
 __all__ = [
-    # Core
     'Axon',
     'ThinkLayer',
     'AxonConfig',
-    'ThinkLayerConfig', 
+    'ThinkLayerConfig',
     'LLMConfig',
+    'AgentConfig',
     'Thought',
     'ThoughtStage',
     'ThoughtResult',
     'MemoryEntry',
-    
-    # Reasoning
     'ReasoningMethod',
     'ChainOfThoughts',
     'SelfConsistency',
@@ -58,10 +50,10 @@ __all__ = [
     'ReasoningOrchestrator',
     'TreeOfThoughts',
     'ThoughtNode',
-    
-    # Components
+    'GraphOfThoughts',
     'Retriever',
     'MemoryManager',
     'GroundingModule',
-    'Renderer'
-] 
+    'Renderer',
+    'EmbeddingProvider',
+]
