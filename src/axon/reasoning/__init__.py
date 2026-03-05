@@ -1,7 +1,3 @@
-"""
-Reasoning module for Ax0n - Multiple reasoning methods
-"""
-
 from .reasoning_methods import (
     ReasoningMethod,
     ChainOfThoughts,
@@ -10,13 +6,15 @@ from .reasoning_methods import (
     ReasoningOrchestrator
 )
 from .tree_of_thoughts import TreeOfThoughts, ThoughtNode
+from .graph_of_thoughts import GraphOfThoughts
 
 __all__ = [
     'ReasoningMethod',
     'ChainOfThoughts',
-    'SelfConsistency', 
+    'SelfConsistency',
     'AlgorithmOfThoughts',
     'ReasoningOrchestrator',
     'TreeOfThoughts',
-    'ThoughtNode'
-] 
+    'ThoughtNode',
+    'GraphOfThoughts',
+]

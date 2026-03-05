@@ -1,15 +1,11 @@
-"""
-Multiple reasoning methods for Ax0n
-"""
-
 import asyncio
 import json
-import uuid
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 from enum import Enum
 import structlog
 from ..core.models import Thought, ThoughtStage
 from ..core.config import ThinkLayerConfig, LLMConfig
+from ..utils import parse_json_object_from_response
 
 logger = structlog.get_logger(__name__)
 
@@ -25,12 +21,12 @@ class ReasoningMethod(str, Enum):
 
 class ChainOfThoughts:
     """Chain of Thoughts (CoT) - Linear reasoning"""
-    
-    def __init__(self, config: ThinkLayerConfig, llm_config: LLMConfig):
+
+    def __init__(self, config: ThinkLayerConfig, llm_config: Optional[LLMConfig] = None):
         self.config = config
         self.llm_config = llm_config
         self.logger = logger.bind(component="chain_of_thoughts")
-    
+
     async def solve(
         self,
         query: str,
@@ -38,38 +34,35 @@ class ChainOfThoughts:
         llm_client: Any
     ) -> Tuple[List[Thought], str]:
         """Solve using linear chain of thoughts"""
-        
+
         self.logger.info("Starting Chain of Thoughts reasoning", query=query[:100])
-        
+
         thoughts = []
         current_answer = ""
-        
+
         try:
             for step in range(1, self.config.max_depth + 1):
-                # Build prompt with previous thoughts
                 prompt = self._build_cot_prompt(query, context, thoughts, step)
-                
+
                 response = await llm_client.generate(prompt)
                 thought = self._parse_cot_response(response, step, len(thoughts) + 1)
-                
+
                 if thought:
                     thoughts.append(thought)
-                    
-                    # Check if we should continue
+
                     if not thought.needs_more_thoughts:
                         break
                 else:
                     break
-            
-            # Generate final answer
+
             final_answer = await self._generate_final_answer(query, thoughts, llm_client)
-            
+
             return thoughts, final_answer
-            
+
         except Exception as e:
             self.logger.error("Chain of Thoughts failed", error=str(e))
             raise
-    
+
     def _build_cot_prompt(
         self,
         query: str,
@@ -78,19 +71,19 @@ class ChainOfThoughts:
         step: int
     ) -> str:
         """Build prompt for next thought in chain"""
-        
+
         context_summary = ""
         if context.get('vector_results'):
             context_summary += f"Relevant documents: {len(context['vector_results'])} found\n"
         if context.get('user_attributes'):
             context_summary += f"User context: {json.dumps(context['user_attributes'], indent=2)}\n"
-        
+
         thought_history = ""
         if previous_thoughts:
             thought_history = "Previous thoughts:\n"
             for i, thought in enumerate(previous_thoughts, 1):
                 thought_history += f"{i}. {thought.thought}\n"
-        
+
         prompt = f"""
 You are solving a problem step by step using Chain of Thoughts reasoning.
 
@@ -120,28 +113,29 @@ Return your response as a JSON object:
 IMPORTANT: Return ONLY valid JSON. No additional text.
 """
         return prompt.strip()
-    
+
     def _parse_cot_response(self, response: str, step: int, total_steps: int) -> Optional[Thought]:
         """Parse CoT response into Thought object"""
         try:
-            json_start = response.find('{')
-            json_end = response.rfind('}') + 1
-            if json_start == -1 or json_end == 0:
+            data = parse_json_object_from_response(response)
+            if not data or 'thought' not in data:
+                self.logger.warning(
+                    "CoT response parse failed or missing 'thought' key",
+                    step=step,
+                    response_preview=response[:200],
+                )
                 return None
-            
-            json_str = response[json_start:json_end]
-            data = json.loads(json_str)
-            
-            if 'thought' not in data:
+
+            if not isinstance(data['thought'], str) or not data['thought'].strip():
+                self.logger.warning("CoT response has empty thought content", step=step)
                 return None
-            
-            # Convert stage string to enum
+
             stage_str = data.get('stage', 'analysis')
             try:
                 stage = ThoughtStage(stage_str)
             except ValueError:
                 stage = ThoughtStage.ANALYSIS
-            
+
             thought = Thought(
                 thought=data['thought'],
                 thought_number=step,
@@ -151,13 +145,13 @@ IMPORTANT: Return ONLY valid JSON. No additional text.
                 stage=stage,
                 score=data.get('confidence')
             )
-            
+
             return thought
-            
+
         except (json.JSONDecodeError, KeyError) as e:
             self.logger.error("Failed to parse CoT response", error=str(e))
             return None
-    
+
     async def _generate_final_answer(
         self,
         query: str,
@@ -165,12 +159,12 @@ IMPORTANT: Return ONLY valid JSON. No additional text.
         llm_client: Any
     ) -> str:
         """Generate final answer from thought chain"""
-        
+
         if not thoughts:
             return "Unable to generate a response."
-        
+
         thoughts_text = "\n".join([f"Step {i+1}: {thought.thought}" for i, thought in enumerate(thoughts)])
-        
+
         prompt = f"""
 Based on the following reasoning chain, provide a clear and comprehensive answer to the original query.
 
@@ -181,7 +175,7 @@ REASONING CHAIN:
 
 FINAL ANSWER:
 """
-        
+
         try:
             response = await llm_client.generate(prompt)
             return response.strip()
@@ -192,13 +186,13 @@ FINAL ANSWER:
 
 class SelfConsistency:
     """Self-Consistency - Parallel CoT with voting"""
-    
-    def __init__(self, config: ThinkLayerConfig, llm_config: LLMConfig):
+
+    def __init__(self, config: ThinkLayerConfig, llm_config: Optional[LLMConfig] = None):
         self.config = config
         self.llm_config = llm_config
         self.logger = logger.bind(component="self_consistency")
-        self.num_paths = 5  # Number of parallel reasoning paths
-    
+        self.num_paths = config.num_parallel_paths
+
     async def solve(
         self,
         query: str,
@@ -206,29 +200,33 @@ class SelfConsistency:
         llm_client: Any
     ) -> Tuple[List[Thought], str]:
         """Solve using self-consistency with multiple parallel paths"""
-        
+
         self.logger.info("Starting Self-Consistency reasoning", query=query[:100])
-        
+
         try:
-            # Generate multiple parallel reasoning paths
             paths = await self._generate_parallel_paths(query, context, llm_client)
-            
-            # Extract final answers from each path
+
+            if not paths:
+                self.logger.warning("All parallel paths failed")
+                return [], "Unable to generate a response."
+
             answers = [path['answer'] for path in paths if path['answer']]
-            
-            # Vote on the best answer
+
             final_answer = await self._vote_on_answers(query, answers, llm_client)
-            
-            # Use the most common path as the main thought chain
-            main_path = max(paths, key=lambda p: len(p['thoughts']))
+
+            def _avg_confidence(path: Dict[str, Any]) -> float:
+                scores = [t.score for t in path['thoughts'] if t.score is not None]
+                return sum(scores) / len(scores) if scores else 0.0
+
+            main_path = max(paths, key=_avg_confidence)
             thoughts = main_path['thoughts']
-            
+
             return thoughts, final_answer
-            
+
         except Exception as e:
             self.logger.error("Self-Consistency failed", error=str(e))
             raise
-    
+
     async def _generate_parallel_paths(
         self,
         query: str,
@@ -236,29 +234,28 @@ class SelfConsistency:
         llm_client: Any
     ) -> List[Dict[str, Any]]:
         """Generate multiple parallel reasoning paths"""
-        
+
         tasks = []
         for i in range(self.num_paths):
             task = self._generate_single_path(query, context, llm_client, i)
             tasks.append(task)
-        
+
         try:
             paths = await asyncio.gather(*tasks, return_exceptions=True)
-            
-            # Filter out failed paths
+
             valid_paths = []
             for path in paths:
                 if isinstance(path, Exception):
                     self.logger.warning("Path generation failed", error=str(path))
                 elif path and path.get('thoughts'):
                     valid_paths.append(path)
-            
+
             return valid_paths
-            
+
         except Exception as e:
             self.logger.error("Parallel path generation failed", error=str(e))
             return []
-    
+
     async def _generate_single_path(
         self,
         query: str,
@@ -267,37 +264,36 @@ class SelfConsistency:
         path_id: int
     ) -> Dict[str, Any]:
         """Generate a single reasoning path"""
-        
+
         thoughts = []
-        
+
         for step in range(1, self.config.max_depth + 1):
             prompt = self._build_sc_prompt(query, context, thoughts, step, path_id)
-            
+
             try:
                 response = await llm_client.generate(prompt)
                 thought = self._parse_sc_response(response, step, len(thoughts) + 1, path_id)
-                
+
                 if thought:
                     thoughts.append(thought)
-                    
+
                     if not thought.needs_more_thoughts:
                         break
                 else:
                     break
-                    
+
             except Exception as e:
                 self.logger.warning(f"Step {step} failed for path {path_id}", error=str(e))
                 break
-        
-        # Generate answer for this path
+
         answer = await self._generate_path_answer(query, thoughts, llm_client)
-        
+
         return {
             'path_id': path_id,
             'thoughts': thoughts,
             'answer': answer
         }
-    
+
     def _build_sc_prompt(
         self,
         query: str,
@@ -307,17 +303,17 @@ class SelfConsistency:
         path_id: int
     ) -> str:
         """Build prompt for self-consistency path"""
-        
+
         context_summary = ""
         if context.get('vector_results'):
             context_summary += f"Relevant documents: {len(context['vector_results'])} found\n"
-        
+
         thought_history = ""
         if previous_thoughts:
             thought_history = "Previous thoughts:\n"
             for i, thought in enumerate(previous_thoughts, 1):
                 thought_history += f"{i}. {thought.thought}\n"
-        
+
         prompt = f"""
 You are solving a problem using reasoning path {path_id + 1} of {self.num_paths}.
 
@@ -347,7 +343,7 @@ Return your response as a JSON object:
 IMPORTANT: Return ONLY valid JSON. No additional text.
 """
         return prompt.strip()
-    
+
     def _parse_sc_response(
         self,
         response: str,
@@ -357,23 +353,25 @@ IMPORTANT: Return ONLY valid JSON. No additional text.
     ) -> Optional[Thought]:
         """Parse self-consistency response"""
         try:
-            json_start = response.find('{')
-            json_end = response.rfind('}') + 1
-            if json_start == -1 or json_end == 0:
+            data = parse_json_object_from_response(response)
+            if not data or 'thought' not in data:
+                self.logger.warning(
+                    "SC response parse failed",
+                    step=step,
+                    path_id=path_id,
+                    response_preview=response[:200],
+                )
                 return None
-            
-            json_str = response[json_start:json_end]
-            data = json.loads(json_str)
-            
-            if 'thought' not in data:
+
+            if not isinstance(data['thought'], str) or not data['thought'].strip():
                 return None
-            
+
             stage_str = data.get('stage', 'analysis')
             try:
                 stage = ThoughtStage(stage_str)
             except ValueError:
                 stage = ThoughtStage.ANALYSIS
-            
+
             thought = Thought(
                 thought=data['thought'],
                 thought_number=step,
@@ -384,13 +382,13 @@ IMPORTANT: Return ONLY valid JSON. No additional text.
                 score=data.get('confidence'),
                 metadata={'path_id': path_id}
             )
-            
+
             return thought
-            
+
         except (json.JSONDecodeError, KeyError) as e:
             self.logger.error("Failed to parse SC response", error=str(e))
             return None
-    
+
     async def _generate_path_answer(
         self,
         query: str,
@@ -398,12 +396,12 @@ IMPORTANT: Return ONLY valid JSON. No additional text.
         llm_client: Any
     ) -> str:
         """Generate answer for a single path"""
-        
+
         if not thoughts:
             return ""
-        
+
         thoughts_text = "\n".join([f"Step {i+1}: {thought.thought}" for i, thought in enumerate(thoughts)])
-        
+
         prompt = f"""
 Based on this reasoning path, provide a concise answer to the query.
 
@@ -414,14 +412,14 @@ REASONING:
 
 ANSWER:
 """
-        
+
         try:
             response = await llm_client.generate(prompt)
             return response.strip()
         except Exception as e:
             self.logger.error("Failed to generate path answer", error=str(e))
             return ""
-    
+
     async def _vote_on_answers(
         self,
         query: str,
@@ -429,16 +427,15 @@ ANSWER:
         llm_client: Any
     ) -> str:
         """Vote on the best answer from multiple paths"""
-        
+
         if not answers:
             return "Unable to generate a response."
-        
+
         if len(answers) == 1:
             return answers[0]
-        
-        # Create voting prompt
+
         answers_text = "\n".join([f"{i+1}. {answer}" for i, answer in enumerate(answers)])
-        
+
         prompt = f"""
 Multiple reasoning paths have generated different answers to the same query.
 
@@ -447,29 +444,28 @@ QUERY: {query}
 ANSWERS:
 {answers_text}
 
-TASK: Analyze these answers and provide the most accurate and comprehensive response. 
+TASK: Analyze these answers and provide the most accurate and comprehensive response.
 You may combine insights from multiple answers if they are complementary.
 
 FINAL ANSWER:
 """
-        
+
         try:
             response = await llm_client.generate(prompt)
             return response.strip()
         except Exception as e:
             self.logger.error("Voting failed", error=str(e))
-            # Return the most common answer or first answer
             return answers[0] if answers else "Unable to generate a response."
 
 
 class AlgorithmOfThoughts:
     """Algorithm of Thoughts (AoT) - Implicit algorithmic reasoning"""
-    
-    def __init__(self, config: ThinkLayerConfig, llm_config: LLMConfig):
+
+    def __init__(self, config: ThinkLayerConfig, llm_config: Optional[LLMConfig] = None):
         self.config = config
         self.llm_config = llm_config
         self.logger = logger.bind(component="algorithm_of_thoughts")
-    
+
     async def solve(
         self,
         query: str,
@@ -477,25 +473,22 @@ class AlgorithmOfThoughts:
         llm_client: Any
     ) -> Tuple[List[Thought], str]:
         """Solve using algorithmic thinking"""
-        
+
         self.logger.info("Starting Algorithm of Thoughts reasoning", query=query[:100])
-        
+
         try:
-            # Generate algorithmic approach
             algorithm = await self._generate_algorithm(query, context, llm_client)
-            
-            # Execute the algorithm step by step
+
             thoughts = await self._execute_algorithm(algorithm, query, context, llm_client)
-            
-            # Generate final answer
+
             final_answer = await self._generate_final_answer(query, thoughts, llm_client)
-            
+
             return thoughts, final_answer
-            
+
         except Exception as e:
             self.logger.error("Algorithm of Thoughts failed", error=str(e))
             raise
-    
+
     async def _generate_algorithm(
         self,
         query: str,
@@ -503,11 +496,11 @@ class AlgorithmOfThoughts:
         llm_client: Any
     ) -> Dict[str, Any]:
         """Generate an algorithmic approach to the problem"""
-        
+
         context_summary = ""
         if context.get('vector_results'):
             context_summary += f"Relevant documents: {len(context['vector_results'])} found\n"
-        
+
         prompt = f"""
 You are solving a problem using Algorithm of Thoughts (AoT) - an approach that breaks down problems into algorithmic steps.
 
@@ -538,24 +531,20 @@ Return your response as a JSON object:
 
 IMPORTANT: Return ONLY valid JSON. No additional text.
 """
-        
+
         try:
             response = await llm_client.generate(prompt)
-            
-            json_start = response.find('{')
-            json_end = response.rfind('}') + 1
-            if json_start == -1 or json_end == 0:
+
+            algorithm = parse_json_object_from_response(response)
+            if not algorithm:
                 return {"steps": [], "estimated_steps": 3}
-            
-            json_str = response[json_start:json_end]
-            algorithm = json.loads(json_str)
-            
+
             return algorithm
-            
+
         except Exception as e:
             self.logger.error("Failed to generate algorithm", error=str(e))
             return {"steps": [], "estimated_steps": 3}
-    
+
     async def _execute_algorithm(
         self,
         algorithm: Dict[str, Any],
@@ -564,31 +553,31 @@ IMPORTANT: Return ONLY valid JSON. No additional text.
         llm_client: Any
     ) -> List[Thought]:
         """Execute the algorithm step by step"""
-        
+
         thoughts = []
         steps = algorithm.get('steps', [])
-        
+
         for i, step in enumerate(steps, 1):
             prompt = self._build_aot_step_prompt(query, context, step, i, thoughts)
-            
+
             try:
                 response = await llm_client.generate(prompt)
                 thought = self._parse_aot_response(response, i, len(steps), step)
-                
+
                 if thought:
                     thoughts.append(thought)
-                    
+
                     if not thought.needs_more_thoughts:
                         break
                 else:
                     break
-                    
+
             except Exception as e:
                 self.logger.warning(f"Algorithm step {i} failed", error=str(e))
                 break
-        
+
         return thoughts
-    
+
     def _build_aot_step_prompt(
         self,
         query: str,
@@ -598,17 +587,17 @@ IMPORTANT: Return ONLY valid JSON. No additional text.
         previous_thoughts: List[Thought]
     ) -> str:
         """Build prompt for algorithm step execution"""
-        
+
         context_summary = ""
         if context.get('vector_results'):
             context_summary += f"Relevant documents: {len(context['vector_results'])} found\n"
-        
+
         thought_history = ""
         if previous_thoughts:
             thought_history = "Previous results:\n"
             for i, thought in enumerate(previous_thoughts, 1):
                 thought_history += f"Step {i}: {thought.thought}\n"
-        
+
         prompt = f"""
 You are executing step {step_number} of an algorithmic approach to solve a problem.
 
@@ -643,7 +632,7 @@ Return your response as a JSON object:
 IMPORTANT: Return ONLY valid JSON. No additional text.
 """
         return prompt.strip()
-    
+
     def _parse_aot_response(
         self,
         response: str,
@@ -653,17 +642,18 @@ IMPORTANT: Return ONLY valid JSON. No additional text.
     ) -> Optional[Thought]:
         """Parse AoT response"""
         try:
-            json_start = response.find('{')
-            json_end = response.rfind('}') + 1
-            if json_start == -1 or json_end == 0:
+            data = parse_json_object_from_response(response)
+            if not data or 'thought' not in data:
+                self.logger.warning(
+                    "AoT response parse failed",
+                    step=step_number,
+                    response_preview=response[:200],
+                )
                 return None
-            
-            json_str = response[json_start:json_end]
-            data = json.loads(json_str)
-            
-            if 'thought' not in data:
+
+            if not isinstance(data['thought'], str) or not data['thought'].strip():
                 return None
-            
+
             thought = Thought(
                 thought=data['thought'],
                 thought_number=step_number,
@@ -678,13 +668,13 @@ IMPORTANT: Return ONLY valid JSON. No additional text.
                     'method': algorithm_step.get('method', '')
                 }
             )
-            
+
             return thought
-            
+
         except (json.JSONDecodeError, KeyError) as e:
             self.logger.error("Failed to parse AoT response", error=str(e))
             return None
-    
+
     async def _generate_final_answer(
         self,
         query: str,
@@ -692,12 +682,12 @@ IMPORTANT: Return ONLY valid JSON. No additional text.
         llm_client: Any
     ) -> str:
         """Generate final answer from algorithmic execution"""
-        
+
         if not thoughts:
             return "Unable to generate a response."
-        
+
         thoughts_text = "\n".join([f"Step {i+1}: {thought.thought}" for i, thought in enumerate(thoughts)])
-        
+
         prompt = f"""
 Based on the algorithmic execution, provide a clear and comprehensive answer to the original query.
 
@@ -708,7 +698,7 @@ ALGORITHMIC EXECUTION:
 
 FINAL ANSWER:
 """
-        
+
         try:
             response = await llm_client.generate(prompt)
             return response.strip()
@@ -719,21 +709,21 @@ FINAL ANSWER:
 
 class ReasoningOrchestrator:
     """Orchestrates different reasoning methods"""
-    
-    def __init__(self, config: ThinkLayerConfig, llm_config: LLMConfig):
+
+    def __init__(self, config: ThinkLayerConfig, llm_config: Optional[LLMConfig] = None):
         self.config = config
         self.llm_config = llm_config
         self.logger = logger.bind(component="reasoning_orchestrator")
-        
-        # Initialize all reasoning methods
+
         self.cot = ChainOfThoughts(config, llm_config)
         self.self_consistency = SelfConsistency(config, llm_config)
         self.aot = AlgorithmOfThoughts(config, llm_config)
-        
-        # Import TreeOfThoughts to avoid circular imports
+
         from .tree_of_thoughts import TreeOfThoughts
+        from .graph_of_thoughts import GraphOfThoughts
         self.tot = TreeOfThoughts(config, llm_config)
-    
+        self.got = GraphOfThoughts(config, llm_config)
+
     async def solve(
         self,
         query: str,
@@ -742,9 +732,9 @@ class ReasoningOrchestrator:
         llm_client: Any
     ) -> Tuple[List[Thought], str]:
         """Solve using the specified reasoning method"""
-        
+
         self.logger.info(f"Using reasoning method: {method.value}")
-        
+
         if method == ReasoningMethod.COT:
             return await self.cot.solve(query, context, llm_client)
         elif method == ReasoningMethod.SELF_CONSISTENCY:
@@ -753,9 +743,11 @@ class ReasoningOrchestrator:
             return await self.aot.solve(query, context, llm_client)
         elif method == ReasoningMethod.TOT:
             return await self.tot.solve(query, context, llm_client)
+        elif method == ReasoningMethod.GOT:
+            return await self.got.solve(query, context, llm_client)
         else:
             raise ValueError(f"Unsupported reasoning method: {method}")
-    
+
     def get_method_description(self, method: ReasoningMethod) -> str:
         """Get description of reasoning method"""
         descriptions = {
@@ -766,7 +758,7 @@ class ReasoningOrchestrator:
             ReasoningMethod.GOT: "Graph-based reasoning with dependencies"
         }
         return descriptions.get(method, "Unknown method")
-    
+
     def get_method_complexity(self, method: ReasoningMethod) -> str:
         """Get complexity level of reasoning method"""
         complexities = {
@@ -776,4 +768,4 @@ class ReasoningOrchestrator:
             ReasoningMethod.TOT: "Medium",
             ReasoningMethod.GOT: "High"
         }
-        return complexities.get(method, "Unknown") 
+        return complexities.get(method, "Unknown")
