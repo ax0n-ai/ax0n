@@ -1,0 +1,114 @@
+site_name: Ax0n Documentation
+site_description: Model-agnostic Think & Memory layer for LLMs
+site_author: Ax0n Team
+site_url: https://axon-ai.github.io/axon/
+
+repo_name: axon-ai/axon
+repo_url: https://github.com/axon-ai/axon
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/toggle-switch
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/toggle-switch-off-outline
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+  icon:
+    repo: fontawesome/brands/github
+    edit: material/pencil
+    view: material/eye
+
+plugins:
+  - search
+  - git-revision-date-localized:
+      enable_creation_date: true
+
+markdown_extensions:
+  - admonition
+  - codehilite:
+      guess_lang: false
+  - footnotes
+  - meta
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.betterem:
+      smart_enable: all
+  - pymdownx.caret
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.magiclink
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+  - pymdownx.snippets:
+      check_paths: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+      combine_header_slug: true
+      slugify: !!python/object/apply:pymdownx.slugs.slugify
+        kwds:
+          case: lower
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Installation: getting-started/installation.md
+    - Quick Start: getting-started/quick-start.md
+    - Configuration: getting-started/configuration.md
+  - API Reference:
+    - Axon Class: api/axon.md
+    - Reasoning Methods: api/reasoning-methods.md
+    - Configuration: api/configuration.md
+    - Data Models: api/models.md
+    - Components: api/components.md
+  - Examples:
+    - Basic Usage: examples/basic-usage.md
+    - Multiple Methods: examples/multiple-methods.md
+    - Tree of Thoughts: examples/tree-of-thoughts.md
+  - Development:
+    - Contributing: development/contributing.md
+    - Testing: development/testing.md
+    - Building: development/building.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/axon-ai/axon
+    - icon: fontawesome/brands/twitter
+      link: https://twitter.com/axon_ai
+
+extra_javascript:
+  - https://polyfill.io/v3/polyfill.min.js?features=es6
+  - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js 
